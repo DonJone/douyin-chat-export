@@ -957,7 +957,7 @@ async def login_cookie_import(req: CookieImportRequest):
         data = json.loads(raw)
         if isinstance(data, list):
             for c in data:
-                if not isinstance(c, dict) or "name" not in c:
+                if not isinstance(c, dict) or not c.get("name"):
                     continue
                 entry: dict = {
                     "name": c["name"],
@@ -972,10 +972,17 @@ async def login_cookie_import(req: CookieImportRequest):
                     entry["httpOnly"] = bool(c["httpOnly"])
                 if c.get("secure") is not None:
                     entry["secure"] = bool(c["secure"])
-                ss = c.get("sameSite")
-                if ss:
-                    ss_cap = ss.capitalize()
-                    entry["sameSite"] = ss_cap if ss_cap in ("Strict", "Lax", "None") else "Lax"
+                # cookie-editor exports sameSite as lowercase enum.
+                # Map "no_restriction" → "None" (cross-site allowed) — must NOT downgrade to Lax,
+                # since some Douyin auth cookies require cross-site delivery for IM API calls.
+                ss = (c.get("sameSite") or "").strip().lower()
+                ss_map = {"no_restriction": "None", "none": "None",
+                          "lax": "Lax", "strict": "Strict"}
+                if ss in ss_map:
+                    entry["sameSite"] = ss_map[ss]
+                    # Playwright requires Secure=true when SameSite=None
+                    if entry["sameSite"] == "None":
+                        entry["secure"] = True
                 parsed.append(entry)
         else:
             return JSONResponse({"error": "JSON 格式需为数组"}, status_code=400)
