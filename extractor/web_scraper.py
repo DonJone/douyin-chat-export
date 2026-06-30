@@ -195,13 +195,16 @@ class WebChatScraper:
         self._db_conn = get_db()
 
         self.pw = await async_playwright().start()
-        self.context = await self.pw.chromium.launch_persistent_context(
-            USER_DATA_DIR,
+        kwargs = dict(
             headless=os.environ.get("HEADLESS", "false").lower() == "true",
             viewport={"width": 1400, "height": 900},
             locale="zh-CN",
-            args=["--disable-blink-features=AutomationControlled"],
+            args=["--disable-blink-features=AutomationControlled"]
         )
+        try:
+            self.context = await self.pw.chromium.launch_persistent_context(USER_DATA_DIR, channel="chrome", **kwargs)
+        except Exception:
+            self.context = await self.pw.chromium.launch_persistent_context(USER_DATA_DIR, **kwargs)
         await self.context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
         """)

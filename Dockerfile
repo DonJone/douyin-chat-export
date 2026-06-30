@@ -28,8 +28,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && playwright install chromium
 
-# Application source
-COPY extract.py export.py scheduler.py ./
+# backend logic and scraper
+COPY extract.py export.py scheduler.py import_cookies.py ./
 COPY extractor/ extractor/
 COPY backend/ backend/
 COPY docker-entrypoint.sh .

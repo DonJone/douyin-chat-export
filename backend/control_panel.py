@@ -1,4 +1,5 @@
 """Control panel for managing scraper, viewer, and export."""
+from __future__ import annotations
 import asyncio
 import json
 import os
@@ -8,6 +9,7 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
+from typing import Optional
 
 from backend import database
 
@@ -127,20 +129,20 @@ async def restore_schedule_on_startup():
 class ScrapeRequest(BaseModel):
     incremental: bool = True
     filter: str = ""
-    conversations: list[str] | None = None  # selected nicknames; overrides filter
+    conversations: Optional[list[str]] = None  # selected nicknames; overrides filter
 
 
 class ExportRequest(BaseModel):
     format: str = "jsonl"
     filter: str = ""
-    conversations: list[str] | None = None  # selected nicknames; overrides filter
+    conversations: Optional[list[str]] = None  # selected nicknames; overrides filter
 
 
 class ScheduleRequest(BaseModel):
     enabled: bool
     cron: str = ""  # cron expression: "0 0 * * *" or shorthand
     incremental: bool = True
-    conversations: list[str] | None = None  # selected nicknames for scheduled scrape
+    conversations: Optional[list[str]] = None  # selected nicknames for scheduled scrape
 
 
 class CustomFilterAction(BaseModel):
@@ -210,8 +212,7 @@ def _send_serverchan_sync(sendkey: str, title: str, desp: str) -> tuple[bool, st
     except Exception as e:
         return False, f"请求失败: {e}"
 
-
-def _build_failure_desp(reason: str, log_path: str | None = None, tail: int = 20) -> str:
+def _build_failure_desp(reason: str, log_path: Optional[str] = None, tail: int = 20) -> str:
     """Markdown body for failure notifications: timestamp, reason, last N log lines."""
     import datetime
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -648,6 +649,17 @@ def _read_conv_list():
 
 _login_probe_lock = asyncio.Lock()
 
+async def _launch_browser_with_gpu(pw, data_dir, headless=True):
+    kwargs = dict(
+        headless=headless,
+        viewport={"width": 1400, "height": 900},
+        locale="zh-CN",
+        args=["--disable-blink-features=AutomationControlled"]
+    )
+    try:
+        return await pw.chromium.launch_persistent_context(data_dir, channel="chrome", **kwargs)
+    except Exception:
+        return await pw.chromium.launch_persistent_context(data_dir, **kwargs)
 
 async def _probe_login_state() -> dict:
     """Single source of truth for whether the persistent profile is logged in.
@@ -676,11 +688,7 @@ async def _probe_login_state() -> dict:
             from playwright.async_api import async_playwright
             pw = await async_playwright().start()
             try:
-                ctx = await pw.chromium.launch_persistent_context(
-                    _USER_DATA_DIR, headless=True,
-                    viewport={"width": 1400, "height": 900}, locale="zh-CN",
-                    args=["--disable-blink-features=AutomationControlled"],
-                )
+                ctx = await _launch_browser_with_gpu(pw, _USER_DATA_DIR, headless=True)
                 try:
                     page = ctx.pages[0] if ctx.pages else await ctx.new_page()
                     await page.goto("https://www.douyin.com/", wait_until="domcontentloaded")
@@ -855,8 +863,7 @@ async def set_schedule(req: ScheduleRequest):
     _save_config(cfg)
     return {"status": "disabled"}
 
-
-def _parse_cron(expr: str) -> list | None:
+def _parse_cron(expr: str) -> Optional[list]:
     """Parse a 5-field cron expression. Returns list of 5 sets or None."""
     fields = expr.strip().split()
     if len(fields) != 5:
@@ -994,8 +1001,7 @@ async def start_export(req: ExportRequest):
         "file_path": _export_state["file_path"],
     }
 
-
-def _do_export(fmt: str, filter_name: str, conversations: list | None):
+def _do_export(fmt: str, filter_name: str, conversations: Optional[list]):
     try:
         from extractor.exporter import ChatLabExporter
         import re
@@ -1159,6 +1165,7 @@ async def login_mouse(req: MouseAction):
             await mouse.down()
         elif req.action == "mousemove":
             await mouse.move(req.x, req.y)
+            return {"status": "ok"}
         elif req.action == "mouseup":
             await mouse.up()
         else:
@@ -1166,8 +1173,8 @@ async def login_mouse(req: MouseAction):
 
         # Take a fresh screenshot after interaction
         await asyncio.sleep(0.15)
-        png = await page.screenshot(type="png")
-        _login_state["screenshot"] = base64.b64encode(png).decode()
+        img_data = await page.screenshot(type="jpeg", quality=50)
+        _login_state["screenshot"] = base64.b64encode(img_data).decode()
 
         return {"status": "ok"}
     except Exception as e:
@@ -1195,8 +1202,8 @@ async def login_keyboard(req: KeyAction):
             return JSONResponse({"error": "Invalid keyboard action"}, status_code=400)
 
         await asyncio.sleep(0.15)
-        png = await page.screenshot(type="png")
-        _login_state["screenshot"] = base64.b64encode(png).decode()
+        img_data = await page.screenshot(type="jpeg", quality=50)
+        _login_state["screenshot"] = base64.b64encode(img_data).decode()
         return {"status": "ok"}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -1332,13 +1339,7 @@ async def login_cookie_import(req: CookieImportRequest):
         from playwright.async_api import async_playwright
         os.makedirs(_USER_DATA_DIR, exist_ok=True)
         pw = await async_playwright().start()
-        ctx = await pw.chromium.launch_persistent_context(
-            _USER_DATA_DIR,
-            headless=True,
-            viewport={"width": 1400, "height": 900},
-            locale="zh-CN",
-            args=["--disable-blink-features=AutomationControlled"],
-        )
+        ctx = await _launch_browser_with_gpu(pw, _USER_DATA_DIR, headless=True)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await page.goto("https://www.douyin.com/", wait_until="domcontentloaded")
         await asyncio.sleep(1)
@@ -1396,13 +1397,7 @@ async def _login_flow():
         pw = await async_playwright().start()
         _login_state["_pw"] = pw
 
-        ctx = await pw.chromium.launch_persistent_context(
-            _USER_DATA_DIR,
-            headless=True,
-            viewport={"width": 1400, "height": 900},
-            locale="zh-CN",
-            args=["--disable-blink-features=AutomationControlled"],
-        )
+        ctx = await _launch_browser_with_gpu(pw, _USER_DATA_DIR, headless=True)
         _login_state["_context"] = ctx
         await ctx.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
@@ -1445,8 +1440,8 @@ async def _login_flow():
             _login_state["countdown"] = timeout_secs - i
 
             # Screenshot
-            png = await page.screenshot(type="png")
-            _login_state["screenshot"] = base64.b64encode(png).decode()
+            img_data = await page.screenshot(type="jpeg", quality=50)
+            _login_state["screenshot"] = base64.b64encode(img_data).decode()
             _login_state["message"] = f"请用抖音 APP 扫码 ({timeout_secs - i}s)"
 
             # Check login
@@ -2867,7 +2862,7 @@ async function pollLoginStatus() {
       setText(ls, 'waitingScan'); ls.className = 'status status-running';
       setDynText(info, d.message || '');
       if (d.screenshot) {
-        document.getElementById('loginImg').src = 'data:image/png;base64,' + d.screenshot;
+        document.getElementById('loginImg').src = 'data:image/jpeg;base64,' + d.screenshot;
         document.getElementById('loginScreenshot').style.display = '';
       }
     } else if (d.status === 'logged_in') {
@@ -2915,9 +2910,13 @@ function imgMouseDown(e) {
   sendMouse('mousedown', x, y);
 }
 
+let lastMoveTime = 0;
 function imgMouseMove(e) {
   if (!isDragging) return;
   e.preventDefault();
+  const now = Date.now();
+  if (now - lastMoveTime < 50) return;
+  lastMoveTime = now;
   const {x, y} = imgCoords(e);
   sendMouse('mousemove', x, y);
 }

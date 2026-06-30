@@ -1,0 +1,41 @@
+#!/usr/bin/expect -f
+set timeout -1
+set password "329399"
+set host "don@192.168.1.242"
+
+spawn ssh -o StrictHostKeyChecking=no $host "mkdir -p ~/.config/htop && cat > ~/.config/htop/htoprc << 'EOF'
+# htop configuration
+fields=0 48 17 18 38 39 40 2 46 47 49 1
+sort_key=46
+sort_direction=-1
+tree_sort_key=0
+tree_sort_direction=1
+hide_kernel_threads=1
+hide_userland_threads=1
+shadow_other_users=0
+show_thread_names=1
+show_program_path=0
+highlight_base_name=1
+highlight_megabytes=1
+highlight_threads=1
+highlight_changes=1
+highlight_changes_delay_secs=1
+find_comm_in_cmdline=1
+strip_exe_from_cmdline=1
+show_merged_command=0
+header_margin=1
+screen_tabs=1
+detailed_cpus_time=1
+cpu_count_from_one=1
+show_cpu_usage=1
+show_cpu_frequency=1
+show_cpu_temperature=1
+left_meters=LeftCPUs Memory Swap Zram
+left_meter_modes=1 1 1 1
+right_meters=RightCPUs Tasks LoadAverage Uptime NetworkIO DiskIO Systemd Clock
+right_meter_modes=1 2 2 2 2 2 2 2
+EOF"
+expect {
+    "*assword:*" { send "$password\r"; exp_continue }
+    eof
+}

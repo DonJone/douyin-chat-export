@@ -1,4 +1,5 @@
 """FastAPI backend for browsing exported Douyin chat data."""
+from __future__ import annotations
 import hashlib
 import hmac
 import os
@@ -26,8 +27,9 @@ _CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", 
 _active_tokens: dict[str, float] = {}  # token -> expire_timestamp
 _TOKEN_TTL = 7 * 24 * 3600  # 7 days
 
+from typing import Optional
 
-def _get_password_hash() -> str | None:
+def _get_password_hash() -> Optional[str]:
     """Read password hash from config."""
     import json
     try:

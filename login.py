@@ -17,13 +17,16 @@ async def main():
     print("[*] 启动浏览器，请在弹出的窗口中扫码登录...")
 
     pw = await async_playwright().start()
-    context = await pw.chromium.launch_persistent_context(
-        PROFILE_DIR,
+    kwargs = dict(
         headless=False,
         viewport={"width": 1280, "height": 800},
         locale="zh-CN",
-        args=["--disable-blink-features=AutomationControlled"],
+        args=["--disable-blink-features=AutomationControlled"]
     )
+    try:
+        context = await pw.chromium.launch_persistent_context(PROFILE_DIR, channel="chrome", **kwargs)
+    except Exception:
+        context = await pw.chromium.launch_persistent_context(PROFILE_DIR, **kwargs)
     await context.add_init_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
     )
