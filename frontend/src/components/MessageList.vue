@@ -134,14 +134,29 @@
                   />
                 </div>
               </div>
-              <!-- 视频消息（msg_type=5 新分类 / msg_type=1 老数据带 cj.video.vid）—— 只有 poster，没真视频流 -->
-              <div v-else-if="isJsonVideo(msg)" class="msg-media msg-video-poster" @click="openLightbox(getVideoPoster(msg))">
-                <img v-if="getVideoPoster(msg)" :src="getVideoPoster(msg)" loading="lazy" />
-                <div v-else class="msg-media-missing">[视频]</div>
-                <div class="msg-video-overlay">
-                  <span class="msg-video-play">▶</span>
-                  <span v-if="getVideoDuration(msg)" class="msg-video-dur">{{ getVideoDuration(msg) }}</span>
-                </div>
+              <!-- 视频消息：本地有 .mp4 → 真播放；否则展示封面 + 时长 -->
+              <div v-else-if="isJsonVideo(msg)" class="msg-media msg-video-poster">
+                <video
+                  v-if="hasLocalVideo(msg)"
+                  :src="'/media/' + msg.media_local_path"
+                  :poster="getVideoPoster(msg)"
+                  controls
+                  preload="none"
+                  class="msg-video-player"
+                />
+                <template v-else>
+                  <img
+                    v-if="getVideoPoster(msg)"
+                    :src="getVideoPoster(msg)"
+                    loading="lazy"
+                    @click="openLightbox(getVideoPoster(msg))"
+                  />
+                  <div v-else class="msg-media-missing">[视频]</div>
+                  <div class="msg-video-overlay">
+                    <span class="msg-video-play">▶</span>
+                    <span v-if="getVideoDuration(msg)" class="msg-video-dur">{{ getVideoDuration(msg) }}</span>
+                  </div>
+                </template>
               </div>
               <!-- msg_type=1 但实际是贴纸/表情 JSON -->
               <div v-else-if="isJsonSticker(msg)" class="msg-media">
@@ -517,9 +532,14 @@ function isJsonVideo(msg) {
   return !!(cj && cj.video && cj.video.vid)
 }
 
-// 视频封面：本地 poster > inline_pic 缩略图
+// 本地是否有 .mp4 视频文件可播
+function hasLocalVideo(msg) {
+  return msg.media_local_path && /\.mp4$/i.test(msg.media_local_path)
+}
+
+// 视频封面：优先 inline_pic（仅做缩略图）；本地路径若是 .mp4 则是视频本体，不当封面用
 function getVideoPoster(msg) {
-  if (msg.media_local_path) return '/media/' + msg.media_local_path
+  // inline_pic 是 base64 WebP 缩略图，在 cj 里
   return getInlinePic(msg)
 }
 
@@ -1357,6 +1377,12 @@ watch(() => props.jumpToSeq, async (seq) => {
   position: relative;
   display: inline-block;
   cursor: pointer;
+}
+.msg-video-player {
+  max-width: 280px;
+  max-height: 360px;
+  border-radius: 8px;
+  background: #000;
 }
 .msg-video-overlay {
   position: absolute;

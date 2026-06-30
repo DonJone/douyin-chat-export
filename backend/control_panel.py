@@ -85,6 +85,18 @@ _backfill_state = {
     "finished_at": None,
 }
 
+_video_backfill_state = {
+    "status": "idle",
+    "total": 0,
+    "done": 0,
+    "ok": 0,
+    "failed": 0,
+    "skipped": 0,
+    "message": "",
+    "started_at": None,
+    "finished_at": None,
+}
+
 LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "scrape.log")
 DISCOVER_LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "discover.log")
 CONV_LIST_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "conversations_list.json")
@@ -380,6 +392,79 @@ async def _run_backfill():
         _backfill_state["message"] = f"错误: {e}"
     finally:
         _backfill_state["finished_at"] = time.time()
+
+
+# ── 视频回填：调 batch_play_info 解析签名 URL 后落地 mp4 ──
+
+@control_router.get("/api/media/videos/status")
+async def video_backfill_status():
+    return {
+        "status": _video_backfill_state["status"],
+        "total": _video_backfill_state["total"],
+        "done": _video_backfill_state["done"],
+        "ok": _video_backfill_state["ok"],
+        "failed": _video_backfill_state["failed"],
+        "skipped": _video_backfill_state["skipped"],
+        "message": _video_backfill_state["message"],
+        "started_at": _video_backfill_state["started_at"],
+        "finished_at": _video_backfill_state["finished_at"],
+    }
+
+
+@control_router.get("/api/media/videos/pending")
+async def video_backfill_pending():
+    from backend.database import get_db
+    conn = get_db()
+    n = conn.execute(
+        "SELECT COUNT(*) FROM messages "
+        "WHERE (msg_type = 5 OR (raw_data LIKE '%tkey%' AND raw_data LIKE '%poster%')) "
+        "AND (media_local_path IS NULL OR media_local_path = '' OR media_local_path NOT LIKE '%.mp4')"
+    ).fetchone()[0]
+    conn.close()
+    return {"pending": n}
+
+
+@control_router.post("/api/media/videos/backfill")
+async def video_backfill_start():
+    if _video_backfill_state["status"] == "running":
+        return JSONResponse({"error": "video backfill already running"}, status_code=409)
+    asyncio.create_task(_run_video_backfill())
+    return {"status": "started"}
+
+
+async def _run_video_backfill():
+    from extractor.video_downloader import backfill as run_backfill
+    _video_backfill_state.update({
+        "status": "running", "total": 0, "done": 0, "ok": 0, "failed": 0,
+        "skipped": 0, "message": "启动浏览器解析视频 URL...",
+        "started_at": time.time(), "finished_at": None,
+    })
+
+    def _cb(p):
+        _video_backfill_state["total"] = p.get("total", _video_backfill_state["total"])
+        _video_backfill_state["ok"] = p.get("ok", 0)
+        _video_backfill_state["failed"] = p.get("fail", 0)
+        _video_backfill_state["skipped"] = p.get("skipped", 0)
+        _video_backfill_state["done"] = (
+            _video_backfill_state["ok"] + _video_backfill_state["failed"] + _video_backfill_state["skipped"]
+        )
+        cur = p.get("current", "")
+        _video_backfill_state["message"] = (
+            f"已下载 {_video_backfill_state['ok']}，失败 {_video_backfill_state['failed']}，"
+            f"跳过 {_video_backfill_state['skipped']} / {_video_backfill_state['total']}（{cur[-12:] if cur else ''}）"
+        )
+
+    try:
+        result = await run_backfill(progress_cb=_cb)
+        _video_backfill_state["status"] = "completed"
+        _video_backfill_state["message"] = (
+            f"完成：成功 {result['ok']}，失败 {result['fail']}，跳过 {result['skipped']} / {result['total']}"
+        )
+    except Exception as e:
+        _video_backfill_state["status"] = "failed"
+        _video_backfill_state["message"] = f"错误: {e}"
+    finally:
+        _video_backfill_state["finished_at"] = time.time()
 
 
 @control_router.get("", response_class=HTMLResponse)
@@ -1960,6 +2045,12 @@ select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
       <span class="status status-idle" id="backfillStatus" data-i18n="idle">闲置</span>
     </div>
     <div class="meta" id="backfillMsg" style="margin-top:6px"></div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn btn-primary" id="videoBackfillBtn" onclick="startVideoBackfill()" data-i18n="videoBackfillBtn">下载历史视频</button>
+      <span class="status status-idle" id="videoBackfillStatus" data-i18n="idle">闲置</span>
+      <span class="meta" id="videoPendingCount" style="margin-left:8px"></span>
+    </div>
+    <div class="meta" id="videoBackfillMsg" style="margin-top:6px"></div>
   </div>
 
   <div class="section">
@@ -2074,6 +2165,10 @@ const T = {
     backfillBtn: '下载历史图片',
     backfillRunning: (done, total) => '下载中: ' + done + ' / ' + total,
     backfillDone: (ok, fail) => '完成：成功 ' + ok + '，失败 ' + fail,
+    videoBackfillBtn: '下载历史视频',
+    videoBackfillRunning: (ok, fail, skip, total) => `下载中: 成功 ${ok}，失败 ${fail}，跳过 ${skip} / ${total}`,
+    videoBackfillDone: (ok, fail, skip) => `完成：成功 ${ok}，失败 ${fail}，跳过 ${skip}`,
+    videoPendingTxt: (n) => `（待下载 ${n} 条）`,
     importCookie: '导入 Cookie',
     importBtn: '导入',
     cookiePlaceholder: '粘贴 Cookie（JSON 数组 或 key=value; 格式）...',
@@ -2165,6 +2260,10 @@ const T = {
     backfillBtn: 'Backfill historical images',
     backfillRunning: (done, total) => 'Downloading: ' + done + ' / ' + total,
     backfillDone: (ok, fail) => 'Done: ' + ok + ' succeeded, ' + fail + ' failed',
+    videoBackfillBtn: 'Backfill historical videos',
+    videoBackfillRunning: (ok, fail, skip, total) => `Downloading: ${ok} ok, ${fail} failed, ${skip} skipped / ${total}`,
+    videoBackfillDone: (ok, fail, skip) => `Done: ${ok} succeeded, ${fail} failed, ${skip} skipped`,
+    videoPendingTxt: (n) => `(${n} pending)`,
     importCookie: 'Import Cookie',
     importBtn: 'Import',
     cookiePlaceholder: 'Paste cookies (JSON array or key=value; format)...',
@@ -2610,6 +2709,51 @@ async function pollBackfill() {
   } catch {}
 }
 
+/* ── 视频回填 ── */
+let videoBackfillPollTimer = null;
+
+async function loadVideoPending() {
+  try {
+    const r = await fetch('/panel/api/media/videos/pending');
+    const d = await r.json();
+    setDynText(document.getElementById('videoPendingCount'), t('videoPendingTxt', d.pending || 0));
+  } catch {}
+}
+
+async function startVideoBackfill() {
+  document.getElementById('videoBackfillBtn').disabled = true;
+  setStatusEl(document.getElementById('videoBackfillStatus'), 'running');
+  setDynText(document.getElementById('videoBackfillMsg'), '');
+  await fetch('/panel/api/media/videos/backfill', { method: 'POST' });
+  if (videoBackfillPollTimer) clearInterval(videoBackfillPollTimer);
+  videoBackfillPollTimer = setInterval(pollVideoBackfill, 1500);
+}
+
+async function pollVideoBackfill() {
+  try {
+    const r = await fetch('/panel/api/media/videos/status');
+    const d = await r.json();
+    const status = d.status || 'idle';
+    setStatusEl(document.getElementById('videoBackfillStatus'), status);
+    if (status === 'running') {
+      setDynText(document.getElementById('videoBackfillMsg'),
+        t('videoBackfillRunning', d.ok||0, d.failed||0, d.skipped||0, d.total||0));
+    } else if (status === 'completed') {
+      setDynText(document.getElementById('videoBackfillMsg'),
+        t('videoBackfillDone', d.ok||0, d.failed||0, d.skipped||0));
+      document.getElementById('videoBackfillBtn').disabled = false;
+      clearInterval(videoBackfillPollTimer); videoBackfillPollTimer = null;
+      loadVideoPending();
+    } else if (status === 'failed') {
+      setDynText(document.getElementById('videoBackfillMsg'), d.message || '');
+      document.getElementById('videoBackfillBtn').disabled = false;
+      clearInterval(videoBackfillPollTimer); videoBackfillPollTimer = null;
+    } else {
+      document.getElementById('videoBackfillBtn').disabled = false;
+    }
+  } catch {}
+}
+
 /* ── Password ── */
 async function loadPasswordStatus() {
   const r = await fetch('/panel/api/password/status');
@@ -2896,6 +3040,8 @@ async function panelAuthCheck() {
       loadNotifyStatus();
       loadDownloadImages();
       pollBackfill();
+      loadVideoPending();
+      pollVideoBackfill();
       setInterval(loadStatus, 5000);
     } else {
       document.getElementById('loginOverlay').style.display = 'flex';
