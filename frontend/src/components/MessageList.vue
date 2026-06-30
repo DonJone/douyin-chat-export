@@ -60,7 +60,7 @@
           <!-- 系统消息居中显示 -->
           <template v-if="(msg.msg_type === 0 && !isVoiceMsg(msg)) || isJsonSystemMsg(msg)">
             <div class="msg-system-block">
-              <div class="msg-system-text">{{ renderSystemMsg(msg) }}</div>
+              <div class="msg-system-text" @contextmenu="selectSystemContent">{{ renderSystemMsg(msg) }}</div>
               <!-- 引用的分享视频卡片 -->
               <div
                 v-if="sysRefCache[msg.msg_id]"
@@ -83,7 +83,7 @@
               <img v-if="getAvatarUrl(msg)" :src="getAvatarUrl(msg)" @error="onImgError" />
               <span v-else :style="{ background: isSelf(msg) ? 'var(--accent)' : 'var(--bg-tertiary)', color: isSelf(msg) ? '#fff' : 'var(--text-secondary)' }">{{ displayName(msg)[0] }}</span>
             </div>
-            <div class="msg-body">
+            <div class="msg-body" @contextmenu="selectMsgContent">
               <div class="msg-sender">{{ displayName(msg) }}</div>
               <!-- 引用/回复消息 -->
               <div v-if="getRefMsg(msg)" class="msg-ref-quote" @click="jumpToRefMsg(getRefMsg(msg))">
@@ -132,6 +132,15 @@
                     loading="lazy"
                     @error="onImgError"
                   />
+                </div>
+              </div>
+              <!-- 视频消息（msg_type=5 新分类 / msg_type=1 老数据带 cj.video.vid）—— 只有 poster，没真视频流 -->
+              <div v-else-if="isJsonVideo(msg)" class="msg-media msg-video-poster" @click="openLightbox(getVideoPoster(msg))">
+                <img v-if="getVideoPoster(msg)" :src="getVideoPoster(msg)" loading="lazy" />
+                <div v-else class="msg-media-missing">[视频]</div>
+                <div class="msg-video-overlay">
+                  <span class="msg-video-play">▶</span>
+                  <span v-if="getVideoDuration(msg)" class="msg-video-dur">{{ getVideoDuration(msg) }}</span>
                 </div>
               </div>
               <!-- msg_type=1 但实际是贴纸/表情 JSON -->
@@ -494,15 +503,68 @@ function getInlinePic(msg) {
   return null
 }
 
-// 是否是视频消息（msg_type=3 但本地是 mp4）
+// 是否是视频消息（msg_type=3 但本地是 mp4 —— 实际视频文件已落地）
 function isVideoMsg(msg) {
   return msg.media_local_path && /\.mp4$/i.test(msg.media_local_path)
+}
+
+// 是否是 JSON 视频消息（msg_type=5 新分类，或老数据 msg_type=1 带 cj.video.vid）
+// 这类只有 poster 封面图，没有真正的视频文件（vid→URL 反查 TODO）
+function isJsonVideo(msg) {
+  if (msg.msg_type === 5) return true
+  if (msg.msg_type !== 1) return false
+  const cj = getContentJson(msg)
+  return !!(cj && cj.video && cj.video.vid)
+}
+
+// 视频封面：本地 poster > inline_pic 缩略图
+function getVideoPoster(msg) {
+  if (msg.media_local_path) return '/media/' + msg.media_local_path
+  return getInlinePic(msg)
+}
+
+// 视频时长（秒）
+function getVideoDuration(msg) {
+  const cj = getContentJson(msg)
+  const d = cj?.duration
+  if (d === undefined || d === null) return ''
+  const n = typeof d === 'string' ? parseFloat(d) : Number(d)
+  if (!n || isNaN(n)) return ''
+  return Math.round(n) + '″'
 }
 
 // 图片源：本地大图 > inline_pic 缩略图（视频走单独分支）
 function getImageSrc(msg) {
   if (msg.media_local_path && !isVideoMsg(msg)) return '/media/' + msg.media_local_path
   return getInlinePic(msg)
+}
+
+// 右键消息体 → 全选其内容（让浏览器原生右键菜单的"复制"直接生效）
+function selectMsgContent(e) {
+  const body = e.currentTarget
+  if (!body) return
+  // 优先精确选中消息内容容器（避开 sender / time）
+  const content = body.querySelector(
+    ':scope > .msg-bubble, :scope > .msg-share-card, :scope > .msg-share-comment, :scope > .msg-media, :scope > .msg-voice'
+  )
+  const target = content || body
+  const range = document.createRange()
+  range.selectNodeContents(target)
+  const sel = window.getSelection()
+  sel.removeAllRanges()
+  sel.addRange(range)
+  // 不阻止默认事件 —— 浏览器原生菜单照常出现，"Copy" 即可
+}
+
+// 右键系统消息 → 全选
+function selectSystemContent(e) {
+  const el = e.currentTarget
+  if (!el) return
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  const sel = window.getSelection()
+  sel.removeAllRanges()
+  sel.addRange(range)
 }
 
 // 表情源：本地 > CDN URL
@@ -1289,6 +1351,38 @@ watch(() => props.jumpToSeq, async (seq) => {
   padding: 8px 12px;
   background: var(--bg-tertiary);
   border-radius: 8px;
+}
+/* 视频封面 + 时长 overlay */
+.msg-video-poster {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
+}
+.msg-video-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border-radius: 8px;
+  background: linear-gradient(rgba(0,0,0,0) 60%, rgba(0,0,0,0.5));
+}
+.msg-video-play {
+  font-size: 36px;
+  color: rgba(255,255,255,0.92);
+  text-shadow: 0 2px 8px rgba(0,0,0,0.6);
+  line-height: 1;
+}
+.msg-video-dur {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 3px;
 }
 
 /* Lightbox */

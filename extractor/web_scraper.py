@@ -822,8 +822,24 @@ class WebChatScraper:
                 except Exception as e:
                     fail += 1
                     print(f"  [media] image 失败: {e}")
+            elif mt == "video":
+                # awe_type=0 的视频：只下载 poster（封面图）。真正的视频文件需要
+                # 反查 vid→URL 才能拿，留待后续；poster 用 poster.skey 解密。
+                try:
+                    cj = json.loads(m.get("content_json", "") or "{}")
+                    poster = cj.get("poster") or {}
+                    skey = poster.get("skey")
+                    origin = (poster.get("origin_url_list") or [None])[0]
+                    if not (skey and origin):
+                        continue
+                    rel = _save_image(origin, skey, m.get("server_id", "unknown"), img_dir)
+                    if rel:
+                        m["local_path"] = rel; ok += 1
+                except Exception as e:
+                    fail += 1
+                    print(f"  [media] video 封面失败: {e}")
         if ok or fail:
-            print(f"  [media] 图片/表情 已下载 {ok} 个 (失败 {fail})")
+            print(f"  [media] 图片/表情/视频封面 已下载 {ok} 个 (失败 {fail})")
 
     async def _extract_and_save_user_info(self, conv_id):
         """从 userInfoStore 提取用户信息（昵称、头像、unique_id），下载头像到本地。"""
@@ -1602,6 +1618,18 @@ class WebChatScraper:
                         msg_type = "other"  # 保持 type=0，前端会检测 resource_url
                         dur_sec = round(cj["duration"] / 1000)
                         text = text or f"[语音 {dur_sec}秒]"
+                    elif cj.get("video", {}).get("vid") and cj.get("poster", {}).get("origin_url_list"):
+                        # 视频消息：awe_type=0 的视频走单独路径，cj.video.vid + cj.poster
+                        # 真正的视频流要 vid → 加密 URL 反查（待办），目前只下载 poster 封面图
+                        msg_type = "video"
+                        try:
+                            dur_sec = round(float(cj.get("duration") or 0))
+                        except (TypeError, ValueError):
+                            dur_sec = 0
+                        text = f"[视频 {dur_sec}秒]" if dur_sec else "[视频]"
+                        urls = cj.get("poster", {}).get("origin_url_list") or []
+                        if urls and isinstance(urls[0], str):
+                            image_src = urls[0]
                     elif text:
                         msg_type = "text"
                     else:
@@ -2130,11 +2158,11 @@ class WebChatScraper:
                     (sender_name or "unknown").encode()
                 ).hexdigest()[:12]
 
-            msg_type_map = {"text": 1, "emoji": 2, "image": 3, "share": 4, "other": 0}
+            msg_type_map = {"text": 1, "emoji": 2, "image": 3, "share": 4, "other": 0, "video": 5}
             msg_type = msg_type_map.get(msg.get("msg_type", "text"), 0)
 
-            # 图片和表情包都记录 media_url (ensure it's a string)
-            raw_media = msg.get("image_src") if msg.get("msg_type") in ("image", "emoji", "share") else None
+            # 图片/表情/分享/视频 都记录 media_url (ensure it's a string)
+            raw_media = msg.get("image_src") if msg.get("msg_type") in ("image", "emoji", "share", "video") else None
             media_url = str(raw_media) if raw_media and isinstance(raw_media, str) else None
             local_path = msg.get("local_path")
 

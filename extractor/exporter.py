@@ -16,6 +16,7 @@ CHATLAB_TYPE_MAP = {
     2: 5,   # emoji → EMOJI
     3: 1,   # image → IMAGE
     4: 24,  # share → SHARE
+    5: 1,   # video → IMAGE (只有 poster，没有真视频流)
     0: 99,  # other → OTHER
 }
 
@@ -288,6 +289,7 @@ class ChatLabExporter:
         image_embedded = 0
         emoji_count = 0
         voice_count = 0
+        video_count = 0
         system_count = 0
         share_normalized = 0
         ref_count = 0
@@ -313,13 +315,26 @@ class ChatLabExporter:
                 content = f"[语音 {dur_sec}秒]" if dur_sec else "[语音]"
                 voice_count += 1
 
+            # 视频消息：msg_type=5 (新分类) 或 cj.video.vid 兜底（老数据）
+            # 视频文件本身没存（vid→URL 未解），只有 poster 封面图
+            is_video = False
+            if not is_voice and ((msg["msg_type"] == 5) or (cj and cj.get("video", {}).get("vid"))):
+                is_video = True
+                try:
+                    dur_sec = round(float((cj or {}).get("duration") or 0))
+                except (TypeError, ValueError):
+                    dur_sec = 0
+                content = f"[视频 {dur_sec}秒]" if dur_sec else "[视频]"
+                chatlab_type = 0  # TEXT —— ChatLab 没有 video 类型，poster 用 IMAGE 另放
+                video_count += 1
+
             # 表情：用文字标签代替 URL — CDN 早晚过期，URL 对 LLM 也没意义。
             # 从 URL 路径里反解出表情名（如 [续火花]）。
-            if not is_voice and chatlab_type == 5:
+            if not is_voice and not is_video and chatlab_type == 5:
                 content = _emoji_text_label(content, msg["media_url"])
                 emoji_count += 1
             # 图片：优先 CDN URL，本地文件 fallback 为 base64
-            elif not is_voice and chatlab_type == 1:
+            elif not is_voice and not is_video and chatlab_type == 1:
                 if msg["media_url"]:
                     content = msg["media_url"]
                     image_count += 1
@@ -339,7 +354,7 @@ class ChatLabExporter:
             # 分享消息：以 cj 的形态判断（含 itemId），不依赖 msg_type ——
             # 实测有 ~2300 条 share 被错分类成 msg_type=1 (TEXT)，content 直接是 aweme JSON 漏出来。
             # 不要放宽到 aweType / content_title 等字段 —— 表情消息的 cj 也带这些。
-            if not is_voice and cj and cj.get("itemId"):
+            if not is_voice and not is_video and cj and cj.get("itemId"):
                 item_id = cj.get("itemId", "")
                 title = (cj.get("content_title") or "").strip()
                 author = (cj.get("content_name") or "").strip()
@@ -354,8 +369,8 @@ class ChatLabExporter:
                 chatlab_type = 24  # SHARE，统一类型
                 share_normalized += 1
 
-            # 系统消息（msg_type=0 但不是语音 / 不是 share）：模板 JSON 渲染成可读文字
-            elif not is_voice and msg["msg_type"] == 0:
+            # 系统消息（msg_type=0 但不是语音 / 不是 share / 不是 video）：模板 JSON 渲染成可读文字
+            elif not is_voice and not is_video and msg["msg_type"] == 0:
                 content = _system_message_text(content, cj)
                 if chatlab_type == 99:
                     chatlab_type = 0  # TEXT
@@ -427,6 +442,8 @@ class ChatLabExporter:
             print(f"  表情: {emoji_count} (转为文字标签)")
         if voice_count:
             print(f"  语音: {voice_count} (转为文字标签)")
+        if video_count:
+            print(f"  视频: {video_count} (转为文字标签 + 封面图)")
         if system_count:
             print(f"  系统消息: {system_count} (模板渲染为文字)")
         if share_normalized:
