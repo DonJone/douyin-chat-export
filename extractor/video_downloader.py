@@ -93,6 +93,35 @@ def _download(url: str, timeout: int = 60) -> bytes:
         return r.read()
 
 
+def _faststart_mp4(path: str) -> None:
+    """Rewrite mp4 in-place to put moov at the front, so browsers can play it
+    without buffering the whole file. Douyin's CDN serves unfaststart mp4
+    (moov at end), which the HTML5 <video> element refuses to play.
+
+    Uses ffmpeg `-movflags faststart`; no re-encode — just container remux.
+    Silently no-ops if ffmpeg is missing.
+    """
+    import shutil
+    import subprocess
+    if not shutil.which("ffmpeg"):
+        return
+    tmp = path + ".faststart.mp4"
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", path,
+             "-c", "copy", "-movflags", "+faststart", tmp],
+            capture_output=True, timeout=60,
+        )
+        if proc.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+            os.replace(tmp, path)
+        else:
+            try: os.remove(tmp)
+            except OSError: pass
+    except Exception:
+        try: os.remove(tmp)
+        except OSError: pass
+
+
 async def _resolve_batch(page, tkeys: list[str]) -> dict[str, str]:
     """Resolve a batch of tos_keys to main_url. Returns {tkey: url} for successful ones."""
     result = await page.evaluate(
@@ -201,6 +230,8 @@ async def backfill(conv_id: str | None = None, limit: int | None = None,
                         raise ValueError(f"bad mp4 ({len(data)}B magic={data[:8].hex()})")
                     with open(out_abs, "wb") as f:
                         f.write(data)
+                    # moov-at-end → moov-at-start so browsers can play it
+                    await asyncio.to_thread(_faststart_mp4, out_abs)
                     conn.execute("UPDATE messages SET media_local_path=? WHERE msg_id=?",
                                  (out_rel, sid))
                     conn.commit()
@@ -221,7 +252,22 @@ async def backfill(conv_id: str | None = None, limit: int | None = None,
 
 
 async def main():
-    """CLI: backfill (--limit N optional)."""
+    """CLI:
+      backfill all pending: `python -m extractor.video_downloader`
+      backfill N: `python -m extractor.video_downloader N`
+      faststart fix on existing files: `python -m extractor.video_downloader --faststart`
+    """
+    if len(sys.argv) > 1 and sys.argv[1] == "--faststart":
+        files = [f for f in os.listdir(VIDEOS_DIR) if f.endswith(".mp4")] if os.path.isdir(VIDEOS_DIR) else []
+        print(f"[*] faststart pass over {len(files)} existing files", flush=True)
+        for i, f in enumerate(files):
+            p = os.path.join(VIDEOS_DIR, f)
+            _faststart_mp4(p)
+            if (i+1) % 10 == 0 or i+1 == len(files):
+                print(f"  → {i+1}/{len(files)}", flush=True)
+        print("[+] done")
+        return
+
     limit = None
     if len(sys.argv) > 1:
         try: limit = int(sys.argv[1])
