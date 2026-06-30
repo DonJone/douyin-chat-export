@@ -7,7 +7,8 @@ DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "chat
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
     return conn
 
